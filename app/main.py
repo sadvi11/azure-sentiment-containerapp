@@ -9,10 +9,23 @@ Endpoints:
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from prometheus_client import GC_COLLECTOR, PLATFORM_COLLECTOR, PROCESS_COLLECTOR, REGISTRY
 from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, Field
 
 from app.model import load_model, predict
+
+# On Container Apps /metrics is reachable from the public internet, unlike the
+# in-cluster scrape on EKS. prometheus_client registers three collectors by
+# default that publish host detail rather than app behaviour -- notably the
+# exact interpreter version (python_info -> "3.11.15"), which hands an attacker
+# a free CVE lookup. Drop them; the HTTP request metrics we actually want are
+# added by the Instrumentator below and are unaffected.
+for _collector in (PROCESS_COLLECTOR, PLATFORM_COLLECTOR, GC_COLLECTOR):
+    try:
+        REGISTRY.unregister(_collector)
+    except KeyError:  # already absent, e.g. under a reimport in tests
+        pass
 
 
 @asynccontextmanager
