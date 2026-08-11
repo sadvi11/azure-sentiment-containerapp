@@ -109,6 +109,11 @@ APP_ID=$(az ad app create --display-name "sentiment-cicd-oidc" --query appId -o 
 az ad sp create --id "$APP_ID"
 
 # 3. Trust GitHub Actions, but only this repo's main branch.
+#    NOTE: GitHub may present the subject in an *immutable* form that embeds
+#    numeric owner and repo IDs, e.g.
+#      repo:you@132186717/azure-sentiment-containerapp@1331104566:ref:refs/heads/main
+#    rather than the documented repo:owner/name:ref:... form. If it does, the
+#    credential below is rejected. See "If Azure login fails" under this block.
 az ad app federated-credential create --id "$APP_ID" --parameters "{
   \"name\": \"github-main\",
   \"issuer\": \"https://token.actions.githubusercontent.com\",
@@ -121,6 +126,24 @@ az role assignment create --assignee "$APP_ID" --role Contributor \
   --scope "/subscriptions/${SUB}/resourceGroups/sentiment-rg"
 ```
 
+**If Azure login fails with `AADSTS700213`** ("No matching federated identity
+record found for presented assertion subject"), the error prints the exact
+subject GitHub sent. Add a second credential matching it verbatim:
+
+```bash
+az ad app federated-credential create --id "$APP_ID" --parameters "{
+  \"name\": \"github-main-immutable\",
+  \"issuer\": \"https://token.actions.githubusercontent.com\",
+  \"subject\": \"<paste the subject from the error, exactly>\",
+  \"audiences\": [\"api://AzureADTokenExchange\"]
+}"
+```
+
+This is not a workaround for weaker security — the ID-based subject is
+*stricter*. Numeric IDs survive renames and are never reused, so trust cannot
+transfer to a different repo that later takes the same name. Both credentials
+can coexist; each is an accepted subject, not extra privilege.
+
 Then in your GitHub repo → **Settings → Secrets and variables → Actions**, add
 three **secrets** — `AZURE_CLIENT_ID` (the `$APP_ID` above), `AZURE_TENANT_ID`,
 `AZURE_SUBSCRIPTION_ID` — and one **variable**, `ACR_NAME` (globally unique,
@@ -130,11 +153,10 @@ secrets so GitHub masks them in logs.
 Push to `main` and the pipeline builds the image and deploys. The final step
 prints your public URL.
 
-> **Why the subject string matters:** it pins the trust to
-> `repo:<owner>/<repo>:ref:refs/heads/main`. A run on any other branch, or from
-> a fork, gets a token Azure will not accept. Widening it to
-> `repo:<owner>/<repo>:*` would let *any* branch or pull request deploy —
-> including one opened by a stranger. Keep it narrow.
+> **Why the subject string matters:** whichever form it takes, it ends in
+> `:ref:refs/heads/main`, so a run on any other branch — or from a fork — gets a
+> token Azure will not accept. Widening it to `...:*` would let *any* branch or
+> pull request deploy, including one opened by a stranger. Keep it narrow.
 >
 > **Scope note:** the pipeline skips resource-group creation when the group
 > already exists, which is what lets step 4's narrow scope work. Letting the
