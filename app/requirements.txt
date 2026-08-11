@@ -1,0 +1,6 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+scikit-learn==1.6.1
+joblib==1.4.2
+pydantic==2.10.5
+prometheus-fastapi-instrumentator==7.0.2

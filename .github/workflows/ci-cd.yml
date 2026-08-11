@@ -1,0 +1,82 @@
+name: CI/CD to Azure Container Apps
+
+# CI on every push/PR (train + test). CD (build image in ACR + deploy to
+# Azure Container Apps) only on pushes to main, once tests pass.
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+env:
+  RESOURCE_GROUP: sentiment-rg
+  LOCATION: canadacentral
+  ACR_NAME: ${{ vars.ACR_NAME }}   # set as a repo variable, must be globally unique
+  APP_NAME: sentiment-api
+
+jobs:
+  test:
+    name: Train & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r app/requirements.txt pytest httpx
+
+      - name: Train model
+        run: python -m app.train
+
+      - name: Run tests
+        run: pytest -q
+
+  deploy:
+    name: Build image & deploy to Azure
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Ensure resource group and ACR exist
+        run: |
+          az group create --name "$RESOURCE_GROUP" --location "$LOCATION"
+          az acr create --resource-group "$RESOURCE_GROUP" \
+            --name "$ACR_NAME" --sku Basic --admin-enabled true --only-show-errors
+
+      - name: Build & push image in ACR (no local Docker needed)
+        run: |
+          az acr build --registry "$ACR_NAME" \
+            --image "$APP_NAME:${{ github.sha }}" .
+
+      - name: Deploy infrastructure + app (Bicep)
+        run: |
+          ACR_SERVER=$(az acr show -n "$ACR_NAME" --query loginServer -o tsv)
+          ACR_USER=$(az acr credential show -n "$ACR_NAME" --query username -o tsv)
+          ACR_PASS=$(az acr credential show -n "$ACR_NAME" --query 'passwords[0].value' -o tsv)
+          az deployment group create \
+            --resource-group "$RESOURCE_GROUP" \
+            --template-file infra/main.bicep \
+            --parameters \
+              appName="$APP_NAME" \
+              containerImage="$ACR_SERVER/$APP_NAME:${{ github.sha }}" \
+              acrLoginServer="$ACR_SERVER" \
+              acrUsername="$ACR_USER" \
+              acrPassword="$ACR_PASS"
+
+      - name: Show app URL
+        run: |
+          FQDN=$(az containerapp show -g "$RESOURCE_GROUP" -n "$APP_NAME" \
+            --query properties.configuration.ingress.fqdn -o tsv)
+          echo "Deployed: https://$FQDN"
+          echo "### Deployed :rocket: https://$FQDN" >> "$GITHUB_STEP_SUMMARY"
