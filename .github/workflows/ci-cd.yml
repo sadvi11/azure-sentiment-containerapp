@@ -86,8 +86,12 @@ jobs:
           else
             az group create --name "$RESOURCE_GROUP" --location "$LOCATION"
           fi
+          # --admin-enabled false: nothing needs the admin account. CI pushes
+          # with its own Azure login, and the container app pulls with its
+          # managed identity. Creating with admin on would silently re-enable
+          # it on every run.
           az acr create --resource-group "$RESOURCE_GROUP" \
-            --name "$ACR_NAME" --sku Basic --admin-enabled true --only-show-errors
+            --name "$ACR_NAME" --sku Basic --admin-enabled false --only-show-errors
 
       - name: Build & push image to ACR
         run: |
@@ -103,22 +107,18 @@ jobs:
 
       - name: Deploy infrastructure + app (Bicep)
         run: |
+          # No registry credentials are fetched or passed: the container app
+          # pulls using its own managed identity, which holds AcrPull on the
+          # registry. The ACR admin account is disabled, so `az acr credential
+          # show` would fail here by design.
           ACR_SERVER=$(az acr show -n "$ACR_NAME" --query loginServer -o tsv)
-          ACR_USER=$(az acr credential show -n "$ACR_NAME" --query username -o tsv)
-          ACR_PASS=$(az acr credential show -n "$ACR_NAME" --query 'passwords[0].value' -o tsv)
-          # GitHub only redacts registered secrets; this one is fetched at
-          # runtime, so register it explicitly or a stack trace could print it.
-          echo "::add-mask::$ACR_PASS"
-          echo "::add-mask::$ACR_USER"
           az deployment group create \
             --resource-group "$RESOURCE_GROUP" \
             --template-file infra/main.bicep \
             --parameters \
               appName="$APP_NAME" \
               containerImage="$ACR_SERVER/$APP_NAME:${{ github.sha }}" \
-              acrLoginServer="$ACR_SERVER" \
-              acrUsername="$ACR_USER" \
-              acrPassword="$ACR_PASS"
+              acrLoginServer="$ACR_SERVER"
 
       - name: Show app URL
         run: |

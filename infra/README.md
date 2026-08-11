@@ -16,7 +16,7 @@ LOCATION=canadacentral
 ACR=your-unique-acr-name        # must be globally unique, lowercase
 
 az group create -n $RG -l $LOCATION
-az acr create -g $RG -n $ACR --sku Basic --admin-enabled true
+az acr create -g $RG -n $ACR --sku Basic --admin-enabled false
 
 # build the image in the cloud (no local Docker needed)
 az acr build --registry $ACR --image sentiment-api:v1 .
@@ -28,16 +28,32 @@ az acr build --registry $ACR --image sentiment-api:v1 .
 #   docker build --platform linux/amd64 -t $ACR.azurecr.io/sentiment-api:v1 .
 #   docker push $ACR.azurecr.io/sentiment-api:v1
 
-# deploy infra + app
+# deploy infra + app -- no registry credentials anywhere
 ACR_SERVER=$(az acr show -n $ACR --query loginServer -o tsv)
-ACR_USER=$(az acr credential show -n $ACR --query username -o tsv)
-ACR_PASS=$(az acr credential show -n $ACR --query 'passwords[0].value' -o tsv)
 
 az deployment group create -g $RG --template-file infra/main.bicep \
   --parameters appName=sentiment-api \
     containerImage="$ACR_SERVER/sentiment-api:v1" \
-    acrLoginServer="$ACR_SERVER" acrUsername="$ACR_USER" acrPassword="$ACR_PASS"
+    acrLoginServer="$ACR_SERVER"
+
+# One-time bootstrap: the app gets a system-assigned identity from the
+# template, but the role granting it pull rights has to be created once, after
+# the identity exists. Until then the app cannot pull.
+PRINCIPAL=$(az containerapp show -g $RG -n sentiment-api --query identity.principalId -o tsv)
+az role assignment create --assignee-object-id "$PRINCIPAL" \
+  --assignee-principal-type ServicePrincipal \
+  --role AcrPull --scope "$(az acr show -n $ACR --query id -o tsv)"
 ```
+
+> **Chicken-and-egg, and why it is a separate step:** the role assignment needs
+> the identity's principal ID, which does not exist until the app is created.
+> Bicep cannot express that in one pass for a system-assigned identity, so this
+> runs once per environment. Redeploys reuse the same principal, so the role
+> keeps applying and the step never repeats.
+>
+> Note this requires permission to create role assignments (Owner or User Access
+> Administrator). A plain Contributor service principal **cannot** do it, which
+> is why this is a human bootstrap step rather than something CI performs.
 
 ## Cost
 
@@ -49,38 +65,33 @@ delete the resource group when you are done:
 az group delete -n sentiment-rg --yes --no-wait
 ```
 
-## Production upgrade: drop the ACR admin account
+## Registry authentication: no passwords anywhere
 
-This demo uses ACR **admin credentials** for simplicity, and that is the weakest
-link in the setup. The admin account is a single shared username/password with
-full push *and* pull rights, it cannot be scoped down, and it is stored as a
-secret on the Container App. Azure recommends leaving it disabled.
+The ACR **admin account is disabled**. It is a single shared username/password
+carrying both push *and* pull rights, it cannot be scoped down, and using it
+means storing that password as a secret on the Container App. Azure recommends
+leaving it off, and this deployment does.
 
-The fix is a **managed identity** with a scoped `AcrPull` role, so no password
-exists anywhere:
+Instead, each side authenticates as itself:
+
+| Who | How it authenticates | Rights |
+|-----|----------------------|--------|
+| Container App (pull) | System-assigned managed identity | `AcrPull` on this one registry |
+| CI / you (push) | Your own Azure login (`az acr login`) | Whatever your own role grants |
+
+Consequences worth knowing:
+
+- `az acr credential show` **fails by design**. Nothing should be asking for a
+  registry password — if some command needs one, that command is the problem.
+- The Container App has **zero secrets**. There is no registry password to
+  leak, rotate, or accidentally print into a log.
+- The identity's `AcrPull` is scoped to this registry alone, and is pull-only —
+  a compromised app cannot push a poisoned image back.
+
+To confirm the posture at any time:
 
 ```bash
-RG=sentiment-rg; APP=sentiment-api; ACR=your-unique-acr-name
-
-# 1. Give the container app a system-assigned identity
-az containerapp identity assign -g $RG -n $APP --system-assigned
-
-# 2. Grant that identity pull-only access to the registry
-PRINCIPAL=$(az containerapp show -g $RG -n $APP --query identity.principalId -o tsv)
-ACR_ID=$(az acr show -n $ACR --query id -o tsv)
-az role assignment create --assignee "$PRINCIPAL" --role AcrPull --scope "$ACR_ID"
-
-# 3. Point the app at the registry via that identity, then turn admin off
-az containerapp registry set -g $RG -n $APP --server "$ACR.azurecr.io" --identity system
-az acr update -n $ACR --admin-enabled false
+az acr show -n $ACR --query adminUserEnabled                  # false
+az containerapp secret list -g $RG -n sentiment-api           # []
+az containerapp show -g $RG -n sentiment-api --query identity.type   # SystemAssigned
 ```
-
-Ordering matters: the identity must exist and hold `AcrPull` *before* the app
-tries its next image pull, which is why this runs after the first deploy rather
-than inside `main.bicep`.
-
-> **Handling the admin password until then:** it is fetched at deploy time
-> rather than stored in the repo, the Bicep parameter is marked `@secure()` so
-> it stays out of Azure deployment history, and CI masks it with `::add-mask::`
-> so it cannot surface in public build logs. Never paste it into a terminal
-> where it would land in shell history — always capture it via `$(...)` as above.

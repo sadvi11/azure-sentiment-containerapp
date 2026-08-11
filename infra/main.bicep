@@ -15,13 +15,6 @@ param containerImage string
 @description('ACR login server, e.g. myacr.azurecr.io.')
 param acrLoginServer string
 
-@description('ACR admin username.')
-param acrUsername string
-
-@description('ACR admin password.')
-@secure()
-param acrPassword string
-
 @description('Minimum replicas. 0 lets the app scale to zero (no cost when idle).')
 param minReplicas int = 0
 
@@ -59,6 +52,12 @@ resource environment 'Microsoft.App/managedEnvironments@2024-03-01' = {
 resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
   name: appName
   location: location
+  // The app pulls from ACR with this identity instead of a registry password.
+  // Its principal persists across redeployments, so the one-time AcrPull role
+  // assignment (see infra/README.md) keeps applying.
+  identity: {
+    type: 'SystemAssigned'
+  }
   properties: {
     managedEnvironmentId: environment.id
     configuration: {
@@ -72,14 +71,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
       registries: [
         {
           server: acrLoginServer
-          username: acrUsername
-          passwordSecretRef: 'acr-password'
-        }
-      ]
-      secrets: [
-        {
-          name: 'acr-password'
-          value: acrPassword
+          identity: 'system'
         }
       ]
     }
