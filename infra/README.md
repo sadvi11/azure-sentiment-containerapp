@@ -42,8 +42,38 @@ delete the resource group when you are done:
 az group delete -n sentiment-rg --yes --no-wait
 ```
 
-## Production upgrade
+## Production upgrade: drop the ACR admin account
 
-This demo uses ACR **admin credentials** for simplicity. In production, give the
-Container App a **managed identity** and grant it `AcrPull` on the registry
-instead of using a username/password secret.
+This demo uses ACR **admin credentials** for simplicity, and that is the weakest
+link in the setup. The admin account is a single shared username/password with
+full push *and* pull rights, it cannot be scoped down, and it is stored as a
+secret on the Container App. Azure recommends leaving it disabled.
+
+The fix is a **managed identity** with a scoped `AcrPull` role, so no password
+exists anywhere:
+
+```bash
+RG=sentiment-rg; APP=sentiment-api; ACR=your-unique-acr-name
+
+# 1. Give the container app a system-assigned identity
+az containerapp identity assign -g $RG -n $APP --system-assigned
+
+# 2. Grant that identity pull-only access to the registry
+PRINCIPAL=$(az containerapp show -g $RG -n $APP --query identity.principalId -o tsv)
+ACR_ID=$(az acr show -n $ACR --query id -o tsv)
+az role assignment create --assignee "$PRINCIPAL" --role AcrPull --scope "$ACR_ID"
+
+# 3. Point the app at the registry via that identity, then turn admin off
+az containerapp registry set -g $RG -n $APP --server "$ACR.azurecr.io" --identity system
+az acr update -n $ACR --admin-enabled false
+```
+
+Ordering matters: the identity must exist and hold `AcrPull` *before* the app
+tries its next image pull, which is why this runs after the first deploy rather
+than inside `main.bicep`.
+
+> **Handling the admin password until then:** it is fetched at deploy time
+> rather than stored in the repo, the Bicep parameter is marked `@secure()` so
+> it stays out of Azure deployment history, and CI masks it with `::add-mask::`
+> so it cannot surface in public build logs. Never paste it into a terminal
+> where it would land in shell history — always capture it via `$(...)` as above.

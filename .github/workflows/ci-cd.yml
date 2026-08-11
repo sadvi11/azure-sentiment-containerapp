@@ -50,7 +50,14 @@ jobs:
 
       - name: Ensure resource group and ACR exist
         run: |
-          az group create --name "$RESOURCE_GROUP" --location "$LOCATION"
+          # Creating a resource group needs subscription-level write. Skipping
+          # it when the group already exists lets the pipeline run with a
+          # credential scoped only to this resource group (least privilege).
+          if az group show --name "$RESOURCE_GROUP" --only-show-errors >/dev/null 2>&1; then
+            echo "Resource group $RESOURCE_GROUP already exists."
+          else
+            az group create --name "$RESOURCE_GROUP" --location "$LOCATION"
+          fi
           az acr create --resource-group "$RESOURCE_GROUP" \
             --name "$ACR_NAME" --sku Basic --admin-enabled true --only-show-errors
 
@@ -64,6 +71,10 @@ jobs:
           ACR_SERVER=$(az acr show -n "$ACR_NAME" --query loginServer -o tsv)
           ACR_USER=$(az acr credential show -n "$ACR_NAME" --query username -o tsv)
           ACR_PASS=$(az acr credential show -n "$ACR_NAME" --query 'passwords[0].value' -o tsv)
+          # GitHub only redacts registered secrets; this one is fetched at
+          # runtime, so register it explicitly or a stack trace could print it.
+          echo "::add-mask::$ACR_PASS"
+          echo "::add-mask::$ACR_USER"
           az deployment group create \
             --resource-group "$RESOURCE_GROUP" \
             --template-file infra/main.bicep \

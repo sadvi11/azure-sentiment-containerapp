@@ -1,9 +1,16 @@
+# --- Credentials. Never commit these. ---
 .env
+.env.*
 *.pem
+*.key
+*.pfx
+*.publishsettings
 
-# Azure service-principal credentials (never commit these)
-azure-credentials.json
-*sdk-auth*.json
+# Blanket rule: `az ad sp create-for-rbac --sdk-auth` output is JSON, and it is
+# a full subscription credential. This repo has no legitimate .json file, so
+# ignoring all of them is free insurance against any filename it gets saved to.
+# If you ever need to commit one, force it explicitly: git add -f <file>
+*.json
 
 __pycache__/
 venv/

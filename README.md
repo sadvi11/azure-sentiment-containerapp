@@ -90,16 +90,34 @@ You need the [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli
 and an Azure subscription (a free account works).
 
 ### One-time pipeline setup
-1. **Create a deployment credential** (service principal) and copy the JSON:
+
+1. **Create the resource group yourself**, so the pipeline's credential never
+   needs subscription-wide rights:
+   ```bash
+   az group create --name sentiment-rg --location canadacentral
+   ```
+2. **Create a deployment credential** (service principal) scoped to *only that
+   resource group*, and copy the JSON:
    ```bash
    az ad sp create-for-rbac --name "sentiment-cicd" --role contributor \
-     --scopes /subscriptions/<YOUR_SUBSCRIPTION_ID> --sdk-auth
+     --scopes /subscriptions/<YOUR_SUBSCRIPTION_ID>/resourceGroups/sentiment-rg \
+     --sdk-auth
    ```
-2. In your GitHub repo → **Settings → Secrets and variables → Actions**:
-   - Add a **secret** `AZURE_CREDENTIALS` = the JSON from step 1.
+   > This credential is a **live key to your Azure subscription**. It is printed
+   > once and never shown again. Paste it straight into GitHub — don't save it to
+   > a file, and don't let it reach a shell history or a chat window. If it ever
+   > leaks, revoke it immediately with
+   > `az ad sp delete --id <appId>`.
+3. In your GitHub repo → **Settings → Secrets and variables → Actions**:
+   - Add a **secret** `AZURE_CREDENTIALS` = the JSON from step 2.
    - Add a **variable** `ACR_NAME` = a globally-unique lowercase name (e.g. `sadvisentimentacr`).
-3. Push to `main`. The pipeline builds the image in ACR and deploys the app.
+4. Push to `main`. The pipeline builds the image in ACR and deploys the app.
    The final step prints your public URL.
+
+> **Scope note:** the pipeline skips resource-group creation when the group
+> already exists, which is what lets step 2's narrow scope work. If you'd rather
+> let the pipeline create the group, the credential needs subscription-level
+> Contributor instead — a meaningfully larger blast radius if the secret leaks.
 
 ### Or deploy by hand
 See [`infra/README.md`](infra/README.md) for the manual `az` commands.
