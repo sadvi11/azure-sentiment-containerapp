@@ -21,6 +21,13 @@ az acr create -g $RG -n $ACR --sku Basic --admin-enabled true
 # build the image in the cloud (no local Docker needed)
 az acr build --registry $ACR --image sentiment-api:v1 .
 
+# If that fails with TasksOperationsNotAllowed, ACR Tasks is not enabled on
+# your subscription (common on free/trial). Build and push locally instead --
+# --platform linux/amd64 matters on Apple Silicon, since Container Apps is x86:
+#   az acr login --name $ACR
+#   docker build --platform linux/amd64 -t $ACR.azurecr.io/sentiment-api:v1 .
+#   docker push $ACR.azurecr.io/sentiment-api:v1
+
 # deploy infra + app
 ACR_SERVER=$(az acr show -n $ACR --query loginServer -o tsv)
 ACR_USER=$(az acr credential show -n $ACR --query username -o tsv)

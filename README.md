@@ -127,12 +127,24 @@ See [`infra/README.md`](infra/README.md) for the manual `az` commands.
 
 ---
 
-## Try the deployed app
+## Try the deployed app — it's live
+
+**https://sentiment-api.delightfulpebble-6ceea5c9.canadacentral.azurecontainerapps.io**
+
+Interactive docs: [`/docs`](https://sentiment-api.delightfulpebble-6ceea5c9.canadacentral.azurecontainerapps.io/docs)
+
 ```bash
-curl -X POST https://<your-app-url>/predict \
+APP=https://sentiment-api.delightfulpebble-6ceea5c9.canadacentral.azurecontainerapps.io
+
+curl -X POST $APP/predict \
   -H "Content-Type: application/json" \
   -d '{"text":"great customer service and fast delivery"}'
+# -> {"text":"...","label":"positive","confidence":0.5898}
 ```
+
+> The app **scales to zero**, so the first request after an idle period takes a
+> few seconds to wake a container. Subsequent requests are fast. That cold start
+> is the trade-off for paying nothing while idle.
 
 ## About the model
 Trains on a small in-repo dataset (`app/data.py`) so it builds with no external

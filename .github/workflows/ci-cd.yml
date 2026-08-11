@@ -89,10 +89,17 @@ jobs:
           az acr create --resource-group "$RESOURCE_GROUP" \
             --name "$ACR_NAME" --sku Basic --admin-enabled true --only-show-errors
 
-      - name: Build & push image in ACR (no local Docker needed)
+      - name: Build & push image to ACR
         run: |
-          az acr build --registry "$ACR_NAME" \
-            --image "$APP_NAME:${{ github.sha }}" .
+          # `az acr build` (cloud build via ACR Tasks) is the tidier option, but
+          # ACR Tasks is not available on free/trial subscriptions - it fails
+          # with TasksOperationsNotAllowed. Building on the runner works on any
+          # subscription tier. Runners are x86, matching Container Apps.
+          ACR_SERVER=$(az acr show -n "$ACR_NAME" --query loginServer -o tsv)
+          az acr login --name "$ACR_NAME"
+          docker build --platform linux/amd64 \
+            -t "$ACR_SERVER/$APP_NAME:${{ github.sha }}" .
+          docker push "$ACR_SERVER/$APP_NAME:${{ github.sha }}"
 
       - name: Deploy infrastructure + app (Bicep)
         run: |
