@@ -79,7 +79,7 @@ make run          # http://localhost:8000
 curl -X POST http://localhost:8000/predict \
   -H "Content-Type: application/json" \
   -d '{"text":"this azure deployment worked perfectly"}'
-# -> {"text":"...","label":"positive","confidence":0.55}
+# -> {"text":"...","label":"positive","confidence":0.5287}
 ```
 
 ---
