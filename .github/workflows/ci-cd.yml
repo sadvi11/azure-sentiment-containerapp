@@ -35,11 +35,39 @@ jobs:
       - name: Run tests
         run: pytest -q
 
+  # The `secrets` context is not available in a job-level `if`, so this small
+  # job reads it into an output instead. Without it, a repo that hasn't had its
+  # Azure credentials configured yet fails the deploy job and shows a red badge
+  # for what is really just "not set up on Azure".
+  check-config:
+    name: Check Azure config
+    runs-on: ubuntu-latest
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+    steps:
+      - id: check
+        env:
+          AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+          ACR: ${{ vars.ACR_NAME }}
+        run: |
+          if [ -n "$AZURE_CREDENTIALS" ] && [ -n "$ACR" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "Azure credentials present - deploy will run."
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "### Deploy skipped :construction:" >> "$GITHUB_STEP_SUMMARY"
+            echo "Set the \`AZURE_CREDENTIALS\` secret and the \`ACR_NAME\`" \
+              "variable to enable deployment. See the README." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   deploy:
     name: Build image & deploy to Azure
     runs-on: ubuntu-latest
-    needs: test
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [test, check-config]
+    if: >-
+      needs.check-config.outputs.configured == 'true' &&
+      github.ref == 'refs/heads/main' &&
+      github.event_name == 'push'
     steps:
       - uses: actions/checkout@v4
 
