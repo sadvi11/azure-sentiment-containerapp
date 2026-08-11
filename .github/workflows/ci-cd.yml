@@ -96,14 +96,18 @@ jobs:
           if az group show --name "$RESOURCE_GROUP" --only-show-errors >/dev/null 2>&1; then
             echo "Resource group $RESOURCE_GROUP already exists."
           else
-            az group create --name "$RESOURCE_GROUP" --location "$LOCATION"
+            az group create --name "$RESOURCE_GROUP" --location "$LOCATION" -o none
           fi
           # --admin-enabled false: nothing needs the admin account. CI pushes
           # with its own Azure login, and the container app pulls with its
           # managed identity. Creating with admin on would silently re-enable
           # it on every run.
+          # -o none: the registry JSON embeds systemData.createdBy, which is the
+          # email of whoever created it. On a public repo the Actions log is
+          # world-readable, so printing it publishes that address.
           az acr create --resource-group "$RESOURCE_GROUP" \
-            --name "$ACR_NAME" --sku Basic --admin-enabled false --only-show-errors
+            --name "$ACR_NAME" --sku Basic --admin-enabled false \
+            --only-show-errors -o none
 
       - name: Build & push image to ACR
         run: |
@@ -130,7 +134,8 @@ jobs:
             --parameters \
               appName="$APP_NAME" \
               containerImage="$ACR_SERVER/$APP_NAME:${{ github.sha }}" \
-              acrLoginServer="$ACR_SERVER"
+              acrLoginServer="$ACR_SERVER" \
+            -o none
 
       - name: Show app URL
         run: |
