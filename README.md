@@ -91,33 +91,54 @@ and an Azure subscription (a free account works).
 
 ### One-time pipeline setup
 
-1. **Create the resource group yourself**, so the pipeline's credential never
-   needs subscription-wide rights:
-   ```bash
-   az group create --name sentiment-rg --location canadacentral
-   ```
-2. **Create a deployment credential** (service principal) scoped to *only that
-   resource group*, and copy the JSON:
-   ```bash
-   az ad sp create-for-rbac --name "sentiment-cicd" --role contributor \
-     --scopes /subscriptions/<YOUR_SUBSCRIPTION_ID>/resourceGroups/sentiment-rg \
-     --sdk-auth
-   ```
-   > This credential is a **live key to your Azure subscription**. It is printed
-   > once and never shown again. Paste it straight into GitHub — don't save it to
-   > a file, and don't let it reach a shell history or a chat window. If it ever
-   > leaks, revoke it immediately with
-   > `az ad sp delete --id <appId>`.
-3. In your GitHub repo → **Settings → Secrets and variables → Actions**:
-   - Add a **secret** `AZURE_CREDENTIALS` = the JSON from step 2.
-   - Add a **variable** `ACR_NAME` = a globally-unique lowercase name (e.g. `sadvisentimentacr`).
-4. Push to `main`. The pipeline builds the image in ACR and deploys the app.
-   The final step prints your public URL.
+The pipeline authenticates with **OIDC (workload identity federation)** — GitHub
+proves its identity to Azure on each run and gets a short-lived token. **No Azure
+credential is stored in GitHub at all**, so there is no long-lived secret to
+leak, rotate, or accidentally print into a log.
 
+```bash
+SUB=<YOUR_SUBSCRIPTION_ID>
+REPO=<your-github-user>/azure-sentiment-containerapp
+
+# 1. Create the resource group yourself, so the pipeline's identity never
+#    needs subscription-wide rights.
+az group create --name sentiment-rg --location canadacentral
+
+# 2. Register an application. Note: no client secret is ever created.
+APP_ID=$(az ad app create --display-name "sentiment-cicd-oidc" --query appId -o tsv)
+az ad sp create --id "$APP_ID"
+
+# 3. Trust GitHub Actions, but only this repo's main branch.
+az ad app federated-credential create --id "$APP_ID" --parameters "{
+  \"name\": \"github-main\",
+  \"issuer\": \"https://token.actions.githubusercontent.com\",
+  \"subject\": \"repo:${REPO}:ref:refs/heads/main\",
+  \"audiences\": [\"api://AzureADTokenExchange\"]
+}"
+
+# 4. Grant Contributor on the resource group only.
+az role assignment create --assignee "$APP_ID" --role Contributor \
+  --scope "/subscriptions/${SUB}/resourceGroups/sentiment-rg"
+```
+
+Then in your GitHub repo → **Settings → Secrets and variables → Actions**, add
+three **secrets** — `AZURE_CLIENT_ID` (the `$APP_ID` above), `AZURE_TENANT_ID`,
+`AZURE_SUBSCRIPTION_ID` — and one **variable**, `ACR_NAME` (globally unique,
+lowercase). These are identifiers rather than credentials; they are stored as
+secrets so GitHub masks them in logs.
+
+Push to `main` and the pipeline builds the image and deploys. The final step
+prints your public URL.
+
+> **Why the subject string matters:** it pins the trust to
+> `repo:<owner>/<repo>:ref:refs/heads/main`. A run on any other branch, or from
+> a fork, gets a token Azure will not accept. Widening it to
+> `repo:<owner>/<repo>:*` would let *any* branch or pull request deploy —
+> including one opened by a stranger. Keep it narrow.
+>
 > **Scope note:** the pipeline skips resource-group creation when the group
-> already exists, which is what lets step 2's narrow scope work. If you'd rather
-> let the pipeline create the group, the credential needs subscription-level
-> Contributor instead — a meaningfully larger blast radius if the secret leaks.
+> already exists, which is what lets step 4's narrow scope work. Letting the
+> pipeline create the group would need subscription-level Contributor.
 
 ### Or deploy by hand
 See [`infra/README.md`](infra/README.md) for the manual `az` commands.

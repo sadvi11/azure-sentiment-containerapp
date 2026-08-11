@@ -7,6 +7,12 @@ on:
     branches: ["main"]
   pull_request:
 
+# Least privilege at the workflow level: id-token is what lets Azure verify
+# this run's identity via OIDC, so no Azure credential is stored in GitHub.
+permissions:
+  id-token: write
+  contents: read
+
 env:
   RESOURCE_GROUP: sentiment-rg
   LOCATION: canadacentral
@@ -47,17 +53,21 @@ jobs:
     steps:
       - id: check
         env:
-          AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+          CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           ACR: ${{ vars.ACR_NAME }}
         run: |
-          if [ -n "$AZURE_CREDENTIALS" ] && [ -n "$ACR" ]; then
+          if [ -n "$CLIENT_ID" ] && [ -n "$TENANT_ID" ] && \
+             [ -n "$SUBSCRIPTION_ID" ] && [ -n "$ACR" ]; then
             echo "configured=true" >> "$GITHUB_OUTPUT"
-            echo "Azure credentials present - deploy will run."
+            echo "Azure OIDC identity configured - deploy will run."
           else
             echo "configured=false" >> "$GITHUB_OUTPUT"
             echo "### Deploy skipped :construction:" >> "$GITHUB_STEP_SUMMARY"
-            echo "Set the \`AZURE_CREDENTIALS\` secret and the \`ACR_NAME\`" \
-              "variable to enable deployment. See the README." >> "$GITHUB_STEP_SUMMARY"
+            echo "Set \`AZURE_CLIENT_ID\`, \`AZURE_TENANT_ID\`," \
+              "\`AZURE_SUBSCRIPTION_ID\` and the \`ACR_NAME\` variable" \
+              "to enable deployment. See the README." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   deploy:
@@ -71,10 +81,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Azure login
+      - name: Azure login (OIDC - no stored credential)
         uses: azure/login@v2
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Ensure resource group and ACR exist
         run: |
