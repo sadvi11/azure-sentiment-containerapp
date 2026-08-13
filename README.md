@@ -48,6 +48,7 @@ git push -u origin main
 
 ## What It Does
 - **Trains** a sentiment model (TF-IDF + Logistic Regression, scikit-learn)
+- **Abstains** rather than guessing when the input is outside its vocabulary
 - **Serves** it with FastAPI: `/predict`, `/health`, `/metrics`
 - **Containerizes** it with a multi-stage, non-root Dockerfile
 - **Builds in the cloud** with `az acr build` — no local Docker needed in CI
@@ -78,8 +79,8 @@ make test
 make run          # http://localhost:8000
 curl -X POST http://localhost:8000/predict \
   -H "Content-Type: application/json" \
-  -d '{"text":"this azure deployment worked perfectly"}'
-# -> {"text":"...","label":"positive","confidence":0.5287}
+  -d '{"text":"strong growth and improving margins"}'
+# -> {"label":"positive","confidence":0.927,"vocab_coverage":1.0,...}
 ```
 
 ---
@@ -181,19 +182,99 @@ APP=https://sentiment-api.delightfulpebble-6ceea5c9.canadacentral.azurecontainer
 
 curl -X POST $APP/predict \
   -H "Content-Type: application/json" \
-  -d '{"text":"great customer service and fast delivery"}'
-# -> {"text":"...","label":"positive","confidence":0.5898}
+  -d '{"text":"losses widened and the outlook was cut"}'
+# -> {"label":"negative","confidence":0.913,"vocab_coverage":0.857,...}
 ```
 
 > The app **scales to zero**, so the first request after an idle period takes a
 > few seconds to wake a container. Subsequent requests are fast. That cold start
 > is the trade-off for paying nothing while idle.
 
-## About the model
-Trains on a small in-repo dataset (`app/data.py`) so it builds with no external
-download — the **train → serve → deploy** pipeline is the point. Swap in a larger
-dataset from Azure Blob Storage, or a Hugging Face transformer in `app/model.py`,
-and the pipeline stays the same.
+## About the model — and the bug that shipped
+
+Trains on an in-repo dataset (`app/data.py`) so it builds with no external
+download. Swap in a larger dataset from Azure Blob Storage, or a transformer in
+`app/model.py`, and the pipeline stays the same.
+
+**The first version of this model was quietly wrong in production, and the
+pipeline could not see it.** It is documented here because the failure is more
+useful than the fix.
+
+The model was trained on 40 product-review sentences. The deployed demo is
+linked from a CV that talks about financial documents, so the sentences people
+typed were *"losses widened and the outlook was cut"*. Every one of those words
+was out of vocabulary. TF-IDF produced a near-zero vector, logistic regression
+fell back to the class prior, and the API returned a real-looking label at
+0.50–0.55 confidence. **Measured against six financial sentences it got two
+right** — worse than guessing. Nothing errored. CI was green the whole time.
+
+Two distinct defects, and only measurement found either:
+
+| | Symptom | Cause |
+|---|---|---|
+| **Domain mismatch** | Confident-looking labels at ~0.52 on financial text | Trained on product reviews; every financial term out of vocabulary |
+| **No generalisation** | Perfect on training sentences, **0.471 cross-validated — worse than random** | Bigrams + `min_df=1` gave 1039 features for 121 samples, 863 appearing in exactly one document. Features that occur once can only memorise |
+
+Hyperparameter tuning capped at 0.545, which is the tell that the *data* was
+the problem. The fix was structural:
+
+- **Training data is generated compositionally** — a sentiment lexicon crossed
+  with sentence templates — so every sentiment word appears in many contexts
+  and there is something transferable to learn.
+- **Neutral nouns are shared across both classes.** An earlier attempt put
+  `outlook` in the positive list; the model learned that "outlook" means good
+  and classified *"losses widened and the outlook was cut"* as **positive at
+  0.67** — a confident wrong answer, which is worse than an uncertain one.
+  Sentiment now lives in adjectives and verbs, where it belongs.
+- **The model abstains rather than guesses.** Serving measures how much of the
+  input vocabulary it actually recognises and returns `"uncertain"` below 30%
+  coverage or 0.55 confidence. More training data alone would not have fixed
+  the original bug — the next unfamiliar domain would fail the same silent way.
+
+### How it is honestly evaluated
+
+Cross-validation on generated data mostly proves the model learned the
+generator. So `HELDOUT_EXAMPLES` in `app/data.py` is hand-written, never
+trained on, and uses the lexicon in sentence shapes the generator does not
+produce. **`make train` prints both numbers** so the gap stays visible:
+
+```
+Trained on 1200 samples -> app/model.joblib
+  cross-validated accuracy (generated data): 0.997  <- confirms the lexicon was learned
+  held-out accuracy (24 hand-written sentences): 0.958  <- the number that matters
+```
+
+Quote the second one. The first is not a claim about the real world.
+
+### Sample output
+
+Real responses from the deployed service:
+
+```console
+$ curl -s -X POST $APP/predict -H 'Content-Type: application/json' \
+    -d '{"text":"losses widened and the outlook was cut"}'
+{"text":"losses widened and the outlook was cut","label":"negative",
+ "confidence":0.913,"vocab_coverage":0.857,"known_terms":6,"total_terms":7}
+
+$ curl -s -X POST $APP/predict -H 'Content-Type: application/json' \
+    -d '{"text":"earnings surged and margins improved"}'
+{"text":"earnings surged and margins improved","label":"positive",
+ "confidence":0.934,"vocab_coverage":1.0,"known_terms":5,"total_terms":5}
+
+$ curl -s -X POST $APP/predict -H 'Content-Type: application/json' \
+    -d '{"text":"le chat est sur la table"}'
+{"text":"le chat est sur la table","label":"uncertain","confidence":0.5012,
+ "vocab_coverage":0.0,"known_terms":0,"total_terms":6,
+ "reason":"only 0 of 6 terms are in the model's vocabulary (0% coverage,
+  minimum 30%). This text is outside the domain the model was trained on,
+  so any label would be a guess rather than a prediction."}
+```
+
+The six financial sentences that used to score 2/6 now score 6/6, and they are
+[regression tests](tests/test_api.py) so that cannot silently return.
+
+**What this costs:** the endpoint says "I don't know" more often. That is the
+right trade. A wrong answer a user acts on is more expensive than a refusal.
 
 ## Project layout
 ```

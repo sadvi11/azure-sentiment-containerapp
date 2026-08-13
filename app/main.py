@@ -47,13 +47,27 @@ Instrumentator().instrument(app).expose(app)
 
 
 class PredictRequest(BaseModel):
-    text: str = Field(..., min_length=1, examples=["this deployment worked perfectly"])
+    text: str = Field(..., min_length=1, examples=["strong growth and improving margins"])
 
 
 class PredictResponse(BaseModel):
+    """Prediction plus the evidence behind it.
+
+    The coverage fields are not decoration. This model previously returned a
+    bare label and confidence, and when it was asked about a domain it had
+    never been trained on it answered "positive" at 0.52 - indistinguishable,
+    from the outside, from a real prediction. Reporting how much of the input
+    the model actually recognised is what makes that failure visible instead
+    of silent.
+    """
+
     text: str
-    label: str
+    label: str  # "positive" | "negative" | "uncertain"
     confidence: float
+    vocab_coverage: float  # fraction of input terms the model knows
+    known_terms: int
+    total_terms: int
+    reason: str | None = None  # populated only when label is "uncertain"
 
 
 @app.get("/")
@@ -79,4 +93,8 @@ def predict_sentiment(request: PredictRequest) -> PredictResponse:
         text=request.text,
         label=result["label"],
         confidence=result["confidence"],
+        vocab_coverage=result["vocab_coverage"],
+        known_terms=result["known_terms"],
+        total_terms=result["total_terms"],
+        reason=result.get("reason"),
     )
