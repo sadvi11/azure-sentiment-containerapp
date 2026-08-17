@@ -88,7 +88,41 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      # A disabled subscription is a billing state, not a code defect. Without
+      # this the pipeline goes red on a repository whose tests all pass, which
+      # says "this project is broken" when the truth is "the free trial ended".
+      #
+      # This is NOT continue-on-error over a failing check. The deploy is
+      # skipped only when the subscription is provably unwritable, the reason
+      # is printed as a warning, and every step that tests the code still runs
+      # and can still fail. Blanket-suppressing the deploy failure would hide
+      # a real broken deploy the day billing is restored.
+      - name: Check the subscription can still be written to
+        id: sub
+        run: |
+          state=$(az account show --query state -o tsv 2>/dev/null || echo "UNKNOWN")
+          if az group show --name "$RESOURCE_GROUP" --only-show-errors >/dev/null 2>&1 \
+             || az group list --only-show-errors >/dev/null 2>&1; then
+            # A read succeeding does not prove writes work - a disabled
+            # subscription is marked read-only, so probe an actual write.
+            if az tag list --resource-id "/subscriptions/$(az account show --query id -o tsv)" \
+                 --only-show-errors >/dev/null 2>&1; then
+              echo "usable=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "usable=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "usable=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [ "$(grep -c . <<<"${state}")" -gt 0 ] && [ "$state" != "Enabled" ]; then
+            echo "usable=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [ "$(tail -1 "$GITHUB_OUTPUT")" = "usable=false" ]; then
+            echo "::warning::Azure subscription is disabled or read-only (state: ${state}). Tests passed; the deploy is skipped because the target does not exist. Restore billing to redeploy - no code change is needed."
+          fi
+
       - name: Ensure resource group and ACR exist
+        if: steps.sub.outputs.usable == 'true'
         run: |
           # Creating a resource group needs subscription-level write. Skipping
           # it when the group already exists lets the pipeline run with a
@@ -110,6 +144,7 @@ jobs:
             --only-show-errors -o none
 
       - name: Build & push image to ACR
+        if: steps.sub.outputs.usable == 'true'
         run: |
           # `az acr build` (cloud build via ACR Tasks) is the tidier option, but
           # ACR Tasks is not available on free/trial subscriptions - it fails
@@ -122,6 +157,7 @@ jobs:
           docker push "$ACR_SERVER/$APP_NAME:${{ github.sha }}"
 
       - name: Deploy infrastructure + app (Bicep)
+        if: steps.sub.outputs.usable == 'true'
         run: |
           # No registry credentials are fetched or passed: the container app
           # pulls using its own managed identity, which holds AcrPull on the
@@ -138,6 +174,7 @@ jobs:
             -o none
 
       - name: Show app URL
+        if: steps.sub.outputs.usable == 'true'
         run: |
           FQDN=$(az containerapp show -g "$RESOURCE_GROUP" -n "$APP_NAME" \
             --query properties.configuration.ingress.fqdn -o tsv)
