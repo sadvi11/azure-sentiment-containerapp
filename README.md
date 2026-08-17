@@ -171,24 +171,36 @@ See [`infra/README.md`](infra/README.md) for the manual `az` commands.
 
 ---
 
-## Try the deployed app — it's live
+## The deployed app — currently offline
 
-**https://sentiment-api.delightfulpebble-6ceea5c9.canadacentral.azurecontainerapps.io**
+This service ran in production on Azure Container Apps in `canadacentral`,
+released by pipeline on every push to `main`. **The Azure subscription backing
+it has since been disabled (free-trial credits exhausted), so the endpoint is
+down.** Saying so here rather than leaving a dead link is the point — a URL
+advertised as live and returning nothing is worse than no URL.
 
-Interactive docs: [`/docs`](https://sentiment-api.delightfulpebble-6ceea5c9.canadacentral.azurecontainerapps.io/docs)
+The resources still exist and the deployment is fully reproducible: the
+pipeline rebuilds and redeploys the whole stack from this repository with no
+manual steps, which is what infrastructure as code is for. Re-enabling billing
+brings it back without a code change.
 
 ```bash
-APP=https://sentiment-api.delightfulpebble-6ceea5c9.canadacentral.azurecontainerapps.io
-
-curl -X POST $APP/predict \
+# Anyone can run the identical service locally in about a minute:
+make install && make train && make run
+curl -X POST http://localhost:8000/predict \
   -H "Content-Type: application/json" \
   -d '{"text":"losses widened and the outlook was cut"}'
 # -> {"label":"negative","confidence":0.913,"vocab_coverage":0.857,...}
 ```
 
-> The app **scales to zero**, so the first request after an idle period takes a
-> few seconds to wake a container. Subsequent requests are fast. That cold start
-> is the trade-off for paying nothing while idle.
+**What was measured while it was live** (see the model section below — these
+are real numbers from the running service, not estimates):
+
+| | |
+|---|---|
+| Warm health check | 0.28 s |
+| Cold start after idle | >30 s, then sub-second — the cost of scale-to-zero |
+| Financial-sentence accuracy | 6/6 after the model fix, 2/6 before it |
 
 ## About the model — and the bug that shipped
 
