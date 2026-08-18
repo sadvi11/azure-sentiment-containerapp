@@ -171,18 +171,44 @@ See [`infra/README.md`](infra/README.md) for the manual `az` commands.
 
 ---
 
-## The deployed app — currently offline
+## Try it live
 
-This service ran in production on Azure Container Apps in `canadacentral`,
-released by pipeline on every push to `main`. **The Azure subscription backing
-it has since been disabled (free-trial credits exhausted), so the endpoint is
-down.** Saying so here rather than leaving a dead link is the point — a URL
-advertised as live and returning nothing is worse than no URL.
+**https://sentiment-api-6nhl.onrender.com**
 
-The resources still exist and the deployment is fully reproducible: the
-pipeline rebuilds and redeploys the whole stack from this repository with no
-manual steps, which is what infrastructure as code is for. Re-enabling billing
-brings it back without a code change.
+Interactive API docs: [`/docs`](https://sentiment-api-6nhl.onrender.com/docs)
+
+```bash
+APP=https://sentiment-api-6nhl.onrender.com
+
+curl -X POST $APP/predict -H "Content-Type: application/json" \
+  -d '{"text":"losses widened and the outlook was cut"}'
+# -> {"label":"negative","confidence":0.9133,"vocab_coverage":0.8571,
+#     "known_terms":6,"total_terms":7}
+
+# Ask it something outside its domain and it refuses rather than guessing:
+curl -X POST $APP/predict -H "Content-Type: application/json" \
+  -d '{"text":"le chat est sur la table"}'
+# -> {"label":"uncertain","vocab_coverage":0.0,
+#     "reason":"only 0 of 6 terms are in the model's vocabulary (0% coverage,
+#      minimum 30%). This text is outside the domain the model was trained on,
+#      so any label would be a guess rather than a prediction."}
+```
+
+> **Free plan, so it sleeps after 15 minutes idle** — the first request wakes it
+> and can take ~50 seconds. Everything after that is sub-second. Same trade as
+> Azure Container Apps' scale-to-zero, with a longer cold start.
+
+### Two deployment targets, on purpose
+
+| | |
+|---|---|
+| **Azure Container Apps** | The primary path — Bicep IaC, OIDC federation, managed identity, scale-to-zero. Pipeline and templates unchanged. **Currently offline: the subscription's free-trial credits are exhausted.** Restoring billing redeploys it with no code change. |
+| **Render** | Free-tier fallback, defined in [`render.yaml`](render.yaml). Same application, same model, no credit card. |
+
+The Azure work is what the repository is *about* — federated identity, Bicep,
+a registry with its admin account disabled. The Render deployment exists so a
+demo linked from a CV does not disappear the day one provider's trial ends,
+which is exactly what happened here.
 
 ### Deploying it yourself, free
 
