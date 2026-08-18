@@ -184,6 +184,35 @@ pipeline rebuilds and redeploys the whole stack from this repository with no
 manual steps, which is what infrastructure as code is for. Re-enabling billing
 brings it back without a code change.
 
+### Deploying it yourself, free
+
+[`render.yaml`](render.yaml) is a Render Blueprint that stands this up on a
+free plan in about five minutes — no cloud account with a credit card, no
+billing state that can switch it off:
+
+1. Fork this repository.
+2. At [dashboard.render.com](https://dashboard.render.com) → **New** →
+   **Blueprint**, connect the fork. Render reads `render.yaml`.
+3. **Apply.** It installs the pinned requirements, trains the model from
+   `app/data.py`, and starts uvicorn on the port it assigns.
+
+The blueprint uses Render's native Python runtime rather than the Dockerfile.
+On a paid plan the Dockerfile is the better choice — it is the same artifact
+CI tests — but on the free plan a Docker build adds minutes to every deploy
+and every cold start for an image whose only real dependency is scikit-learn.
+The Dockerfile is still what the Azure pipeline and any Kubernetes deployment
+use.
+
+Two things worth knowing:
+
+- **The model is trained at deploy time, not committed.** `app/model.joblib` is
+  gitignored on purpose, so the deployed model always matches the code that
+  produced it. A committed artifact silently drifts from its training data the
+  first time that data changes.
+- **The free plan sleeps after 15 minutes idle**, so the first request wakes it
+  and takes ~50 seconds. Every request after that is fast. That is the same
+  trade as Azure Container Apps' scale-to-zero, with a longer cold start.
+
 ```bash
 # Anyone can run the identical service locally in about a minute:
 make install && make train && make run

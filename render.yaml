@@ -1,0 +1,58 @@
+# Render Blueprint - free-tier deployment of the sentiment API.
+#
+# WHY THIS EXISTS
+# ---------------
+# This service ran on Azure Container Apps until the subscription's free-trial
+# credits were exhausted and the environment was suspended. The Azure pipeline
+# and Bicep templates are unchanged and still the primary deployment path -
+# restoring billing brings it back with no code change.
+#
+# This blueprint is a second, zero-cost target so the demo stays reachable
+# regardless of any one provider's billing state. Two deployment targets for
+# one service is also the honest version of "multi-cloud": the container is
+# portable, and the only thing that differs is how it is scheduled.
+#
+# NATIVE PYTHON RUNTIME, NOT DOCKER
+# ---------------------------------
+# Render can build the Dockerfile in this repo, and on a paid plan that would
+# be the better choice - it is the same artifact tested in CI. On the free
+# plan a Docker build adds several minutes to every deploy and to every cold
+# start, for an image whose only real dependency is scikit-learn. The native
+# runtime installs the same pinned requirements.
+#
+# The Dockerfile remains the artifact used by the Azure pipeline and by
+# anything running this in Kubernetes.
+
+services:
+  - type: web
+    name: sentiment-api
+    runtime: python
+    plan: free
+    region: oregon          # free plan is not offered in a Canadian region
+    branch: main
+
+    # The model artifact is deliberately NOT committed - see .gitignore. It is
+    # rebuilt from app/data.py on every deploy, so the deployed model always
+    # matches the code that produced it. A committed .joblib silently drifts
+    # from its training data the first time that data changes.
+    buildCommand: |
+      pip install --no-cache-dir -r app/requirements.txt
+      python -m app.train
+
+    # $PORT is assigned by Render at runtime and is not knowable in advance.
+    # The Dockerfile hardcodes 8000 because a container controls its own port
+    # mapping; a platform-managed process does not.
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+
+    # Render polls this to decide whether a deploy succeeded. It loads the
+    # model, so a build that produced a broken artifact fails the deploy
+    # rather than serving 500s.
+    healthCheckPath: /health
+
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"     # match the Dockerfile's python:3.11-slim
+      - key: PYTHONUNBUFFERED
+        value: "1"          # stream logs instead of buffering them
+
+    autoDeploy: true        # deploy on push to main, same trigger as the Azure pipeline
