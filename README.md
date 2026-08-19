@@ -175,6 +175,8 @@ See [`infra/README.md`](infra/README.md) for the manual `az` commands.
 
 **https://sentiment-api-6nhl.onrender.com**
 
+> *Free tier — it sleeps when idle, so the first request can take up to a minute to wake. Measured 42s cold, then instant.*
+
 Interactive API docs: [`/docs`](https://sentiment-api-6nhl.onrender.com/docs)
 
 ```bash
